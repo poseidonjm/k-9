@@ -344,8 +344,9 @@ public class ImapConnectionTest {
             imapConnection.open();
             fail();
         } catch (AuthenticationFailedException e) {
-            e.printStackTrace();
-            assertEquals("SASL authentication failed", e.getMessage());
+            assertEquals(
+                    "Command: AUTHENTICATE XOAUTH2; response: #3# [NO, SASL authentication failed]",
+                    e.getMessage());
         }
     }
 
@@ -528,7 +529,7 @@ public class ImapConnectionTest {
             imapConnection.open();
             fail("Expected exception");
         } catch (NegativeImapResponseException e) {
-            assertEquals(e.getMessage(), null);
+            assertEquals(e.getMessage(), "Command: STARTTLS; response: #2# [NO]");
         }
 
         server.verifyConnectionClosed();
