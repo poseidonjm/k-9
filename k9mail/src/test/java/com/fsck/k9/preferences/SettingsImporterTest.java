@@ -1,9 +1,11 @@
 package com.fsck.k9.preferences;
 
+import com.fsck.k9.Account;
 import com.fsck.k9.Preferences;
 import com.fsck.k9.mail.AuthType;
 
 import org.apache.tools.ant.filters.StringInputStream;
+import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.robolectric.RobolectricTestRunner;
@@ -12,6 +14,7 @@ import org.robolectric.annotation.Config;
 
 import java.io.InputStream;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.List;
 import java.util.UUID;
 
@@ -22,6 +25,20 @@ import static junit.framework.Assert.assertTrue;
 @RunWith(RobolectricTestRunner.class)
 @Config(manifest = "src/main/AndroidManifest.xml", sdk = 21)
 public class SettingsImporterTest {
+
+    @Before
+    public void before() {
+        deletePreExistingAccounts();
+    }
+
+    private void deletePreExistingAccounts() {
+        Preferences preferences = Preferences.getPreferences(RuntimeEnvironment.application);
+        Collection<Account> availableAccounts =
+                preferences.getAvailableAccounts();
+        for(Account account: availableAccounts) {
+            preferences.deleteAccount(account);
+        }
+    }
 
     @Test(expected = SettingsImportExportException.class)
     public void importSettings_throwsExceptionOnBlankFile() throws SettingsImportExportException {
@@ -87,6 +104,7 @@ public class SettingsImporterTest {
 
     @Test
     public void parseSettings_account_xoauth2() throws SettingsImportExportException {
+
         String validUUID = UUID.randomUUID().toString();
         InputStream inputStream = new StringInputStream("<k9settings format=\"1\" version=\"1\">" +
                 "<accounts><account uuid=\""+validUUID+"\"><name>Account</name>" +
@@ -122,9 +140,12 @@ public class SettingsImporterTest {
                 "</account></accounts></k9settings>");
         List<String> accountUuids = new ArrayList<>();
         accountUuids.add(validUUID);
+        
         SettingsImporter.ImportResults results = SettingsImporter.importSettings(
                 RuntimeEnvironment.application, inputStream, true, accountUuids, false);
+
         assertEquals(0, results.errorneousAccounts.size());
+        assertEquals(1, results.importedAccounts.size());
         assertEquals("Account", results.importedAccounts.get(0).imported.name);
         assertEquals(validUUID, results.importedAccounts.get(0).imported.uuid);
 
