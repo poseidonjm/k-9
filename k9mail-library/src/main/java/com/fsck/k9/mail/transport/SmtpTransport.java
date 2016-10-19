@@ -515,7 +515,6 @@ public class SmtpTransport extends Transport {
 
     private void sendMessageTo(List<String> addresses, Message message)
     throws MessagingException {
-
         close();
         open();
 

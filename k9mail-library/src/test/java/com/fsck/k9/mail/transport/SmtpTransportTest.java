@@ -15,6 +15,7 @@ import com.fsck.k9.mail.filter.Base64;
 import com.fsck.k9.mail.helpers.TestMessageBuilder;
 import com.fsck.k9.mail.helpers.TestTrustedSocketFactory;
 import com.fsck.k9.mail.internet.MimeMessage;
+import com.fsck.k9.mail.oauth.OAuth2TokenProvider;
 import com.fsck.k9.mail.ssl.TrustedSocketFactory;
 import com.fsck.k9.mail.store.StoreConfig;
 import com.fsck.k9.mail.transport.mockServer.MockSmtpServer;
@@ -41,25 +42,27 @@ public class SmtpTransportTest {
 
     
     private TrustedSocketFactory socketFactory;
+    private OAuth2TokenProvider oAuth2TokenProvider;
 
     
     @Before
     public void before() {
         socketFactory = new TestTrustedSocketFactory();
+        oAuth2TokenProvider = mock(OAuth2TokenProvider.class);
     }
 
     @Test
     public void SmtpTransport_withValidTransportUri() throws Exception {
         StoreConfig storeConfig = createStoreConfigWithTransportUri("smtp://user:password:CRAM_MD5@server:123456");
 
-        new SmtpTransport(storeConfig, socketFactory);
+        new SmtpTransport(storeConfig, socketFactory, oAuth2TokenProvider);
     }
 
     @Test(expected = MessagingException.class)
     public void SmtpTransport_withInvalidTransportUri_shouldThrow() throws Exception {
         StoreConfig storeConfig = createStoreConfigWithTransportUri("smpt://");
 
-        new SmtpTransport(storeConfig, socketFactory);
+        new SmtpTransport(storeConfig, socketFactory, oAuth2TokenProvider);
     }
 
     @Test
@@ -168,6 +171,43 @@ public class SmtpTransportTest {
             fail("Exception expected");
         } catch (MessagingException e) {
             assertEquals("Authentication method CRAM-MD5 is unavailable.", e.getMessage());
+        }
+
+        server.verifyConnectionStillOpen();
+        server.verifyInteractionCompleted();
+    }
+
+    @Test
+    public void open_withXoauth2Extension() throws Exception {
+        MockSmtpServer server = new MockSmtpServer();
+        server.output("220 localhost Simple Mail Transfer Service Ready");
+        server.expect("EHLO localhost");
+        server.output("250-localhost Hello client.localhost");
+        server.output("250 AUTH XOAUTH2");
+        server.expect("AUTH XOAUTH2 dXNlcj11c2VyAWF1dGg9QmVhcmVyIG51bGwBAQ==");
+        server.output("235 2.7.0 Authentication successful");
+        SmtpTransport transport = startServerAndCreateSmtpTransport(server, AuthType.XOAUTH2, ConnectionSecurity.NONE);
+
+        transport.open();
+
+        server.verifyConnectionStillOpen();
+        server.verifyInteractionCompleted();
+    }
+
+    @Test
+    public void open_withoutXoauth2Extension_shouldThrow() throws Exception {
+        MockSmtpServer server = new MockSmtpServer();
+        server.output("220 localhost Simple Mail Transfer Service Ready");
+        server.expect("EHLO localhost");
+        server.output("250-localhost Hello client.localhost");
+        server.output("250 AUTH PLAIN LOGIN");
+        SmtpTransport transport = startServerAndCreateSmtpTransport(server, AuthType.XOAUTH2, ConnectionSecurity.NONE);
+
+        try {
+            transport.open();
+            fail("Exception expected");
+        } catch (MessagingException e) {
+            assertEquals("Authentication method XOAUTH2 is unavailable.", e.getMessage());
         }
 
         server.verifyConnectionStillOpen();
@@ -413,7 +453,7 @@ public class SmtpTransportTest {
         String uri = SmtpTransport.createUri(serverSettings);
         StoreConfig storeConfig = createStoreConfigWithTransportUri(uri);
 
-        return new TestSmtpTransport(storeConfig, socketFactory);
+        return new TestSmtpTransport(storeConfig, socketFactory, oAuth2TokenProvider);
     }
 
     private StoreConfig createStoreConfigWithTransportUri(String value) {
@@ -452,9 +492,9 @@ public class SmtpTransportTest {
     
     
     static class TestSmtpTransport extends SmtpTransport {
-        TestSmtpTransport(StoreConfig storeConfig, TrustedSocketFactory trustedSocketFactory)
+        TestSmtpTransport(StoreConfig storeConfig, TrustedSocketFactory trustedSocketFactory, OAuth2TokenProvider oAuth2TokenProvider)
                 throws MessagingException {
-            super(storeConfig, trustedSocketFactory);
+            super(storeConfig, trustedSocketFactory, oAuth2TokenProvider);
         }
 
         @Override
