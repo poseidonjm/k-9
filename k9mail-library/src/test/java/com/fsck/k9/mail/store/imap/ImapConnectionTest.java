@@ -306,7 +306,6 @@ public class ImapConnectionTest {
         server.output("+ "+ XOAuth2ChallengeParserTest.STATUS_401_RESPONSE);
         server.expect("");
         server.output("2 NO SASL authentication failed");
-        simplePostAuthenticationDialog(server, "4");
         ImapConnection imapConnection = startServerAndCreateImapConnection(server);
 
         try {

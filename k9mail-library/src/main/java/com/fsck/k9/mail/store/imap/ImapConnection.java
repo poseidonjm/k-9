@@ -414,6 +414,7 @@ class ImapConnection {
                 OAuth2TokenProvider.OAUTH2_TIMEOUT);
         String tag = sendSaslIrCommand(Commands.AUTHENTICATE_XOAUTH2,
                 Authentication.computeXoauth(settings.getUsername(), token), true);
+
         extractCapabilities(
             responseParser.readStatusResponse(tag, Commands.AUTHENTICATE_XOAUTH2, getLogId(),
                     new UntaggedHandler() {
