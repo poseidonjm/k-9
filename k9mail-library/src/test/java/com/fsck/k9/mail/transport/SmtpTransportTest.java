@@ -5,6 +5,7 @@ import java.io.IOException;
 import java.net.InetAddress;
 
 import com.fsck.k9.mail.AuthType;
+import com.fsck.k9.mail.AuthenticationFailedException;
 import com.fsck.k9.mail.CertificateValidationException;
 import com.fsck.k9.mail.ConnectionSecurity;
 import com.fsck.k9.mail.Message;
@@ -22,12 +23,18 @@ import com.fsck.k9.mail.transport.mockServer.MockSmtpServer;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
+import org.mockito.InOrder;
 import org.robolectric.RobolectricTestRunner;
 import org.robolectric.annotation.Config;
 
 import static junit.framework.Assert.assertTrue;
 import static junit.framework.Assert.fail;
 import static org.junit.Assert.assertEquals;
+import static org.mockito.Matchers.any;
+import static org.mockito.Matchers.anyInt;
+import static org.mockito.Matchers.anyString;
+import static org.mockito.Matchers.eq;
+import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
@@ -46,9 +53,11 @@ public class SmtpTransportTest {
 
     
     @Before
-    public void before() {
+    public void before() throws AuthenticationFailedException {
         socketFactory = new TestTrustedSocketFactory();
         oAuth2TokenProvider = mock(OAuth2TokenProvider.class);
+        when(oAuth2TokenProvider.getToken(eq(USERNAME), anyInt()))
+                .thenReturn("oldToken").thenReturn("newToken");
     }
 
     @Test
@@ -184,7 +193,7 @@ public class SmtpTransportTest {
         server.expect("EHLO localhost");
         server.output("250-localhost Hello client.localhost");
         server.output("250 AUTH XOAUTH2");
-        server.expect("AUTH XOAUTH2 dXNlcj11c2VyAWF1dGg9QmVhcmVyIG51bGwBAQ==");
+        server.expect("AUTH XOAUTH2 dXNlcj11c2VyAWF1dGg9QmVhcmVyIG9sZFRva2VuAQE=");
         server.output("235 2.7.0 Authentication successful");
         SmtpTransport transport = startServerAndCreateSmtpTransport(server, AuthType.XOAUTH2, ConnectionSecurity.NONE);
 
@@ -193,6 +202,86 @@ public class SmtpTransportTest {
         server.verifyConnectionStillOpen();
         server.verifyInteractionCompleted();
     }
+
+    @Test
+    public void open_withXoauth2Extension_shouldInvalidateAndRetryOnTokenFailure() throws Exception {
+        MockSmtpServer server = new MockSmtpServer();
+        server.output("220 localhost Simple Mail Transfer Service Ready");
+        server.expect("EHLO localhost");
+        server.output("250-localhost Hello client.localhost");
+        server.output("250 AUTH XOAUTH2");
+        server.expect("AUTH XOAUTH2 dXNlcj11c2VyAWF1dGg9QmVhcmVyIG9sZFRva2VuAQE=");
+        server.output("334 eyJzdGF0dXMiOiI0MDEiLCJzY2hlbWVzIjoiYmVhcmVyIG1hYyIsInNjb3BlIjoiaHR0cHM6Ly9tYWlsLmdvb2dsZS5jb20vIn0K");
+        server.expect("");
+        server.output("535-5.7.1 Username and Password not accepted. Learn more at");
+        server.output("535 5.7.1 http://support.google.com/mail/bin/answer.py?answer=14257 hx9sm5317360pbc.68");
+        server.expect("AUTH XOAUTH2 dXNlcj11c2VyAWF1dGg9QmVhcmVyIG5ld1Rva2VuAQE=");
+        server.output("235 2.7.0 Authentication successful");
+        SmtpTransport transport = startServerAndCreateSmtpTransport(server, AuthType.XOAUTH2, ConnectionSecurity.NONE);
+
+        transport.open();
+
+        InOrder inOrder = inOrder(oAuth2TokenProvider);
+        inOrder.verify(oAuth2TokenProvider).getToken(eq(USERNAME), anyInt());
+        inOrder.verify(oAuth2TokenProvider).invalidateToken(USERNAME);
+        inOrder.verify(oAuth2TokenProvider).getToken(eq(USERNAME), anyInt());
+        server.verifyConnectionStillOpen();
+        server.verifyInteractionCompleted();
+    }
+
+    @Test
+    public void open_withXoauth2Extension_shouldThrowOnMultipleFailure() throws Exception {
+        MockSmtpServer server = new MockSmtpServer();
+        server.output("220 localhost Simple Mail Transfer Service Ready");
+        server.expect("EHLO localhost");
+        server.output("250-localhost Hello client.localhost");
+        server.output("250 AUTH XOAUTH2");
+        server.expect("AUTH XOAUTH2 dXNlcj11c2VyAWF1dGg9QmVhcmVyIG9sZFRva2VuAQE=");
+        server.output("334 eyJzdGF0dXMiOiI0MDEiLCJzY2hlbWVzIjoiYmVhcmVyIG1hYyIsInNjb3BlIjoiaHR0cHM6Ly9tYWlsLmdvb2dsZS5jb20vIn0K");
+        server.expect("");
+        server.output("535-5.7.1 Username and Password not accepted. Learn more at");
+        server.output("535 5.7.1 http://support.google.com/mail/bin/answer.py?answer=14257 hx9sm5317360pbc.68");
+        server.expect("AUTH XOAUTH2 dXNlcj11c2VyAWF1dGg9QmVhcmVyIG5ld1Rva2VuAQE=");
+        server.output("334 eyJzdGF0dXMiOiI0MDEiLCJzY2hlbWVzIjoiYmVhcmVyIG1hYyIsInNjb3BlIjoiaHR0cHM6Ly9tYWlsLmdvb2dsZS5jb20vIn0K");
+        server.expect("");
+        server.output("535-5.7.1 Username and Password not accepted. Learn more at");
+        server.output("535 5.7.1 http://support.google.com/mail/bin/answer.py?answer=14257 hx9sm5317360pbc.68");
+        SmtpTransport transport = startServerAndCreateSmtpTransport(server, AuthType.XOAUTH2, ConnectionSecurity.NONE);
+
+        try {
+            transport.open();
+            fail("Exception expected");
+        } catch (AuthenticationFailedException e) {
+            assertEquals(
+                "Negative SMTP reply: 535 5.7.1 http://support.google.com/mail/bin/answer.py?answer=14257 hx9sm5317360pbc.68",
+                e.getMessage());
+        }
+
+        server.verifyConnectionStillOpen();
+        server.verifyInteractionCompleted();
+    }
+
+    @Test
+    public void open_withXoauth2Extension_shouldThrowOnFailure_fetchingToken() throws Exception {
+        MockSmtpServer server = new MockSmtpServer();
+        server.output("220 localhost Simple Mail Transfer Service Ready");
+        server.expect("EHLO localhost");
+        server.output("250-localhost Hello client.localhost");
+        server.output("250 AUTH XOAUTH2");
+        when(oAuth2TokenProvider.getToken(anyString(), anyInt())).thenThrow(new AuthenticationFailedException("Failed to fetch token"));
+        SmtpTransport transport = startServerAndCreateSmtpTransport(server, AuthType.XOAUTH2, ConnectionSecurity.NONE);
+
+        try {
+            transport.open();
+            fail("Exception expected");
+        } catch (AuthenticationFailedException e) {
+            assertEquals("Failed to fetch token", e.getMessage());
+        }
+
+        server.verifyConnectionStillOpen();
+        server.verifyInteractionCompleted();
+    }
+
 
     @Test
     public void open_withoutXoauth2Extension_shouldThrow() throws Exception {

@@ -320,7 +320,7 @@ public class SmtpTransport extends Transport {
             parseOptionalSizeValue(extensions);
 
             if (!TextUtils.isEmpty(mUsername)
-                    && (TextUtils.isEmpty(mPassword) ||
+                    && (!TextUtils.isEmpty(mPassword) ||
                         AuthType.EXTERNAL == mAuthType ||
                         AuthType.XOAUTH2 == mAuthType)) {
 
@@ -653,12 +653,23 @@ public class SmtpTransport extends Transport {
 
             throw new NegativeSmtpReplyException(replyCode, message);
         }
-    }
 
+    }
+    @Deprecated
     private List<String> executeSimpleCommand(String command) throws IOException, MessagingException {
         return executeSimpleCommand(command, false);
     }
 
+    /**
+     * TODO:  All responses should be checked to confirm that they start with a valid
+     * reply code, and that the reply code is appropriate for the command being executed.
+     * That means it should either be a 2xx code (generally) or a 3xx code in special cases
+     * (e.g., DATA & AUTH LOGIN commands).  Reply codes should be made available as part of
+     * the returned object.
+     *
+     * This should be doing using the non-deprecated API below.
+     */
+    @Deprecated
     private List<String> executeSimpleCommand(String command, boolean sensitive)
     throws IOException, MessagingException {
         List<String> results = new ArrayList<String>();
@@ -666,17 +677,66 @@ public class SmtpTransport extends Transport {
             writeLine(command, sensitive);
         }
 
-        /*
-         * Read lines as long as the length is 4 or larger, e.g. "220-banner text here".
-         * Shorter lines are either errors of contain only a reply code. Those cases will
-         * be handled by checkLine() below.
-         *
-         * TODO:  All responses should be checked to confirm that they start with a valid
-         * reply code, and that the reply code is appropriate for the command being executed.
-         * That means it should either be a 2xx code (generally) or a 3xx code in special cases
-         * (e.g., DATA & AUTH LOGIN commands).  Reply codes should be made available as part of
-         * the returned object.
-         */
+        String line = readCommandResponseLine(results);
+
+        // Check if the reply code indicates an error.
+        checkLine(line);
+
+        return results;
+    }
+
+    private static class CommandResponse {
+
+        private final int replyCode;
+        private final String message;
+
+        public CommandResponse(int replyCode, String message) {
+            this.replyCode = replyCode;
+            this.message = message;
+        }
+    }
+
+    private CommandResponse executeSimpleCommandWithResponse(String command, boolean sensitive) throws IOException, MessagingException {
+        List<String> results = new ArrayList<String>();
+        if (command != null) {
+            writeLine(command, sensitive);
+        }
+
+        String line = readCommandResponseLine(results);
+
+        int length = line.length();
+        if (length < 1) {
+            throw new MessagingException("SMTP response is 0 length");
+        }
+
+        int replyCode = -1;
+        String message = line;
+        if (length >= 3) {
+            try {
+                replyCode = Integer.parseInt(line.substring(0, 3));
+            } catch (NumberFormatException e) { /* ignore */ }
+
+            if (length > 4) {
+                message = line.substring(4);
+            } else {
+                message = "";
+            }
+        }
+
+        char c = line.charAt(0);
+        if ((c == '4') || (c == '5')) {
+            throw new NegativeSmtpReplyException(replyCode, message);
+        }
+
+        return new CommandResponse(replyCode, message);
+    }
+
+
+    /*
+     * Read lines as long as the length is 4 or larger, e.g. "220-banner text here".
+     * Shorter lines are either errors of contain only a reply code.
+     */
+    private String readCommandResponseLine(List<String> results) throws IOException {
         String line = readLine();
         while (line.length() >= 4) {
             if (line.length() > 4) {
@@ -690,11 +750,7 @@ public class SmtpTransport extends Transport {
             }
             line = readLine();
         }
-
-        // Check if the reply code indicates an error.
-        checkLine(line);
-
-        return results;
+        return line;
     }
 
 
@@ -806,10 +862,15 @@ public class SmtpTransport extends Transport {
     }
 
     private void attemptXoauth2(String username) throws MessagingException, IOException {
-        executeSimpleCommand("AUTH XOAUTH2 " +
+        CommandResponse response = executeSimpleCommandWithResponse("AUTH XOAUTH2 " +
                 Authentication.computeXoauth(username,
                         oauthTokenProvider.getToken(username, OAuth2TokenProvider.OAUTH2_TIMEOUT)),
                 true);
+        //Per Google spec, respond to challenge with empty response
+        if(response.replyCode == 334) {
+            Log.i(LOG_TAG, "Challenge response: "+ new Base64().decode(response.message));
+            executeSimpleCommandWithResponse("", false);
+        }
     }
 
     private void saslAuthExternal(String username) throws MessagingException, IOException {
