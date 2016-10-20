@@ -14,15 +14,18 @@ import static com.fsck.k9.mail.K9MailLib.LOG_TAG;
  * See: https://developers.google.com/gmail/xoauth2_protocol#error_response
  */
 public class XOAuth2ChallengeParser {
+    public static final String BAD_RESPONSE = "400";
+
     public static boolean shouldRetry(String response, String host) {
         String decodedResponse = Base64.decode(response);
         try {
             JSONObject json = new JSONObject(decodedResponse);
-            if(!json.getString("status").equals("400")) {
+            if(!json.getString("status").equals(BAD_RESPONSE)) {
                 return false;
             }
         } catch (JSONException jsonException) {
-            Log.i(LOG_TAG, "Error decoding JSON response from:" + host + ". Response was:" + decodedResponse);
+            Log.i(LOG_TAG, "Error decoding JSON response from:"
+                    + host + ". Response was:" + decodedResponse);
         }
         return true;
     }

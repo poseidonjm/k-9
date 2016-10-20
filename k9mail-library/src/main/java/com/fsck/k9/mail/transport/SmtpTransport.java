@@ -34,6 +34,7 @@ import static com.fsck.k9.mail.K9MailLib.LOG_TAG;
 import static com.fsck.k9.mail.CertificateValidationException.Reason.MissingCapability;
 
 public class SmtpTransport extends Transport {
+    public static final int SMTP_CONTINUE_REQUEST = 334;
     public static final int SMTP_AUTHENTICATION_FAILURE_ERROR_CODE = 535;
 
     private TrustedSocketFactory mTrustedSocketFactory;
@@ -884,7 +885,7 @@ public class SmtpTransport extends Transport {
                 Authentication.computeXoauth(username,
                         oauthTokenProvider.getToken(username, OAuth2TokenProvider.OAUTH2_TIMEOUT)),
                 true);
-        if(response.replyCode == 334) {
+        if(response.replyCode == SMTP_CONTINUE_REQUEST) {
             retryXoauthWithNewToken = XOAuth2ChallengeParser.shouldRetry(
                     response.message, mHost);
 
