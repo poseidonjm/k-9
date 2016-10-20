@@ -12,11 +12,13 @@ import com.fsck.k9.mail.Message;
 import com.fsck.k9.mail.MessagingException;
 import com.fsck.k9.mail.ServerSettings;
 import com.fsck.k9.mail.ServerSettings.Type;
+import com.fsck.k9.mail.XOAuth2ChallengeParserTest;
 import com.fsck.k9.mail.filter.Base64;
 import com.fsck.k9.mail.helpers.TestMessageBuilder;
 import com.fsck.k9.mail.helpers.TestTrustedSocketFactory;
 import com.fsck.k9.mail.internet.MimeMessage;
 import com.fsck.k9.mail.oauth.OAuth2TokenProvider;
+import com.fsck.k9.mail.oauth.XOAuth2ChallengeParser;
 import com.fsck.k9.mail.ssl.TrustedSocketFactory;
 import com.fsck.k9.mail.store.StoreConfig;
 import com.fsck.k9.mail.transport.mockServer.MockSmtpServer;
@@ -204,14 +206,96 @@ public class SmtpTransportTest {
     }
 
     @Test
-    public void open_withXoauth2Extension_shouldInvalidateAndRetryOnTokenFailure() throws Exception {
+    public void open_withXoauth2Extension_shouldThrowOn401Response() throws Exception {
         MockSmtpServer server = new MockSmtpServer();
         server.output("220 localhost Simple Mail Transfer Service Ready");
         server.expect("EHLO localhost");
         server.output("250-localhost Hello client.localhost");
         server.output("250 AUTH XOAUTH2");
         server.expect("AUTH XOAUTH2 dXNlcj11c2VyAWF1dGg9QmVhcmVyIG9sZFRva2VuAQE=");
-        server.output("334 eyJzdGF0dXMiOiI0MDEiLCJzY2hlbWVzIjoiYmVhcmVyIG1hYyIsInNjb3BlIjoiaHR0cHM6Ly9tYWlsLmdvb2dsZS5jb20vIn0K");
+        server.output("334 "+ XOAuth2ChallengeParserTest.STATUS_401_RESPONSE);
+        server.expect("");
+        server.output("535-5.7.1 Username and Password not accepted. Learn more at");
+        server.output("535 5.7.1 http://support.google.com/mail/bin/answer.py?answer=14257 hx9sm5317360pbc.68");
+        SmtpTransport transport = startServerAndCreateSmtpTransport(server, AuthType.XOAUTH2, ConnectionSecurity.NONE);
+
+        try {
+            transport.open();
+            fail("Exception expected");
+        } catch (AuthenticationFailedException e) {
+            assertEquals(
+                    "Negative SMTP reply: 535 5.7.1 http://support.google.com/mail/bin/answer.py?answer=14257 hx9sm5317360pbc.68",
+                    e.getMessage());
+        }
+
+        InOrder inOrder = inOrder(oAuth2TokenProvider);
+        inOrder.verify(oAuth2TokenProvider).getToken(eq(USERNAME), anyInt());
+        inOrder.verify(oAuth2TokenProvider).invalidateToken(USERNAME);
+        server.verifyConnectionStillOpen();
+        server.verifyInteractionCompleted();
+    }
+
+    @Test
+    public void open_withXoauth2Extension_shouldInvalidateAndRetryOn400Response() throws Exception {
+        MockSmtpServer server = new MockSmtpServer();
+        server.output("220 localhost Simple Mail Transfer Service Ready");
+        server.expect("EHLO localhost");
+        server.output("250-localhost Hello client.localhost");
+        server.output("250 AUTH XOAUTH2");
+        server.expect("AUTH XOAUTH2 dXNlcj11c2VyAWF1dGg9QmVhcmVyIG9sZFRva2VuAQE=");
+        server.output("334 "+ XOAuth2ChallengeParserTest.STATUS_400_RESPONSE);
+        server.expect("");
+        server.output("535-5.7.1 Username and Password not accepted. Learn more at");
+        server.output("535 5.7.1 http://support.google.com/mail/bin/answer.py?answer=14257 hx9sm5317360pbc.68");
+        server.expect("AUTH XOAUTH2 dXNlcj11c2VyAWF1dGg9QmVhcmVyIG5ld1Rva2VuAQE=");
+        server.output("235 2.7.0 Authentication successful");
+        SmtpTransport transport = startServerAndCreateSmtpTransport(server, AuthType.XOAUTH2, ConnectionSecurity.NONE);
+
+        transport.open();
+
+        InOrder inOrder = inOrder(oAuth2TokenProvider);
+        inOrder.verify(oAuth2TokenProvider).getToken(eq(USERNAME), anyInt());
+        inOrder.verify(oAuth2TokenProvider).invalidateToken(USERNAME);
+        inOrder.verify(oAuth2TokenProvider).getToken(eq(USERNAME), anyInt());
+        server.verifyConnectionStillOpen();
+        server.verifyInteractionCompleted();
+    }
+
+    @Test
+    public void open_withXoauth2Extension_shouldInvalidateAndRetryOnMissingStatusJSONResponse() throws Exception {
+        MockSmtpServer server = new MockSmtpServer();
+        server.output("220 localhost Simple Mail Transfer Service Ready");
+        server.expect("EHLO localhost");
+        server.output("250-localhost Hello client.localhost");
+        server.output("250 AUTH XOAUTH2");
+        server.expect("AUTH XOAUTH2 dXNlcj11c2VyAWF1dGg9QmVhcmVyIG9sZFRva2VuAQE=");
+        server.output("334 "+ XOAuth2ChallengeParserTest.MISSING_STATUS_RESPONSE);
+        server.expect("");
+        server.output("535-5.7.1 Username and Password not accepted. Learn more at");
+        server.output("535 5.7.1 http://support.google.com/mail/bin/answer.py?answer=14257 hx9sm5317360pbc.68");
+        server.expect("AUTH XOAUTH2 dXNlcj11c2VyAWF1dGg9QmVhcmVyIG5ld1Rva2VuAQE=");
+        server.output("235 2.7.0 Authentication successful");
+        SmtpTransport transport = startServerAndCreateSmtpTransport(server, AuthType.XOAUTH2, ConnectionSecurity.NONE);
+
+        transport.open();
+
+        InOrder inOrder = inOrder(oAuth2TokenProvider);
+        inOrder.verify(oAuth2TokenProvider).getToken(eq(USERNAME), anyInt());
+        inOrder.verify(oAuth2TokenProvider).invalidateToken(USERNAME);
+        inOrder.verify(oAuth2TokenProvider).getToken(eq(USERNAME), anyInt());
+        server.verifyConnectionStillOpen();
+        server.verifyInteractionCompleted();
+    }
+
+    @Test
+    public void open_withXoauth2Extension_shouldInvalidateAndRetryOnMissingStatusJsonResponse() throws Exception {
+        MockSmtpServer server = new MockSmtpServer();
+        server.output("220 localhost Simple Mail Transfer Service Ready");
+        server.expect("EHLO localhost");
+        server.output("250-localhost Hello client.localhost");
+        server.output("250 AUTH XOAUTH2");
+        server.expect("AUTH XOAUTH2 dXNlcj11c2VyAWF1dGg9QmVhcmVyIG9sZFRva2VuAQE=");
+        server.output("334 "+ XOAuth2ChallengeParserTest.MISSING_STATUS_RESPONSE);
         server.expect("");
         server.output("535-5.7.1 Username and Password not accepted. Learn more at");
         server.output("535 5.7.1 http://support.google.com/mail/bin/answer.py?answer=14257 hx9sm5317360pbc.68");
@@ -237,12 +321,12 @@ public class SmtpTransportTest {
         server.output("250-localhost Hello client.localhost");
         server.output("250 AUTH XOAUTH2");
         server.expect("AUTH XOAUTH2 dXNlcj11c2VyAWF1dGg9QmVhcmVyIG9sZFRva2VuAQE=");
-        server.output("334 eyJzdGF0dXMiOiI0MDEiLCJzY2hlbWVzIjoiYmVhcmVyIG1hYyIsInNjb3BlIjoiaHR0cHM6Ly9tYWlsLmdvb2dsZS5jb20vIn0K");
+        server.output("334 " + XOAuth2ChallengeParserTest.STATUS_400_RESPONSE);
         server.expect("");
         server.output("535-5.7.1 Username and Password not accepted. Learn more at");
         server.output("535 5.7.1 http://support.google.com/mail/bin/answer.py?answer=14257 hx9sm5317360pbc.68");
         server.expect("AUTH XOAUTH2 dXNlcj11c2VyAWF1dGg9QmVhcmVyIG5ld1Rva2VuAQE=");
-        server.output("334 eyJzdGF0dXMiOiI0MDEiLCJzY2hlbWVzIjoiYmVhcmVyIG1hYyIsInNjb3BlIjoiaHR0cHM6Ly9tYWlsLmdvb2dsZS5jb20vIn0K");
+        server.output("334 " + XOAuth2ChallengeParserTest.STATUS_400_RESPONSE);
         server.expect("");
         server.output("535-5.7.1 Username and Password not accepted. Learn more at");
         server.output("535 5.7.1 http://support.google.com/mail/bin/answer.py?answer=14257 hx9sm5317360pbc.68");

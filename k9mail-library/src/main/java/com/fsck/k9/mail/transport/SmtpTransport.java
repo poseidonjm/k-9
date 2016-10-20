@@ -15,6 +15,7 @@ import com.fsck.k9.mail.filter.SmtpDataStuffing;
 import com.fsck.k9.mail.internet.CharsetSupport;
 import com.fsck.k9.mail.CertificateValidationException;
 import com.fsck.k9.mail.oauth.OAuth2TokenProvider;
+import com.fsck.k9.mail.oauth.XOAuth2ChallengeParser;
 import com.fsck.k9.mail.ssl.TrustedSocketFactory;
 import com.fsck.k9.mail.store.StoreConfig;
 
@@ -189,6 +190,7 @@ public class SmtpTransport extends Transport {
     private OutputStream mOut;
     private boolean m8bitEncodingAllowed;
     private int mLargestAcceptableMessage;
+    private boolean retryXoauthWithNewToken;
 
     public SmtpTransport(StoreConfig storeConfig, TrustedSocketFactory trustedSocketFactory,
                          OAuth2TokenProvider oauth2TokenProvider)
@@ -828,36 +830,52 @@ public class SmtpTransport extends Transport {
     }
 
     private void saslXoauth2(String username) throws MessagingException, IOException {
+        retryXoauthWithNewToken = true;
         try {
             attemptXoauth2(username);
-        } catch (NegativeSmtpReplyException negativeResponseFromOldToken) {
-            if (negativeResponseFromOldToken.getReplyCode() != SMTP_AUTHENTICATION_FAILURE_ERROR_CODE) {
-                throw negativeResponseFromOldToken;
+        } catch (NegativeSmtpReplyException negativeResponse) {
+            if (negativeResponse.getReplyCode() != SMTP_AUTHENTICATION_FAILURE_ERROR_CODE) {
+                throw negativeResponse;
             }
 
-            // Authentication credentials invalid
-
-            //We could avoid this double check if we had a reasonable chance of knowing
-            //if a token was invalid before use (e.g. due to expiry). But we don't
-            //This is the intended behaviour per AccountManager
-            Log.v(LOG_TAG, "Authentication exception, invalidating token and re-trying", negativeResponseFromOldToken);
             oauthTokenProvider.invalidateToken(username);
-            try {
-                attemptXoauth2(username);
-            } catch (NegativeSmtpReplyException negativeResponseFromNewToken) {
-                if (negativeResponseFromNewToken.getReplyCode() != SMTP_AUTHENTICATION_FAILURE_ERROR_CODE) {
-                    throw negativeResponseFromNewToken;
-                }
 
-                // Authentication credentials invalid
-                //Okay, we failed on a new token.
-                //Invalidate the token anyway but assume it's permanent.
-                Log.v(LOG_TAG, "Authentication exception for new token, permanent error assumed",
-                        negativeResponseFromNewToken);
-                oauthTokenProvider.invalidateToken(username);
-                throw new AuthenticationFailedException(negativeResponseFromNewToken.getMessage(),
-                        negativeResponseFromNewToken);
+            if (!retryXoauthWithNewToken) {
+                handlePermanentFailure(negativeResponse);
+            } else {
+                handleTemporaryFailure(username, negativeResponse);
             }
+        }
+    }
+
+    private void handlePermanentFailure(NegativeSmtpReplyException negativeResponse) throws AuthenticationFailedException {
+        throw new AuthenticationFailedException(negativeResponse.getMessage(), negativeResponse);
+    }
+
+    private void handleTemporaryFailure(String username, NegativeSmtpReplyException negativeResponseFromOldToken)
+        throws IOException, MessagingException {
+        // Token was invalid
+
+        //We could avoid this double check if we had a reasonable chance of knowing
+        //if a token was invalid before use (e.g. due to expiry). But we don't
+        //This is the intended behaviour per AccountManager
+
+        Log.v(LOG_TAG, "Authentication exception, re-trying with new token", negativeResponseFromOldToken);
+        try {
+            attemptXoauth2(username);
+        } catch (NegativeSmtpReplyException negativeResponseFromNewToken) {
+            if (negativeResponseFromNewToken.getReplyCode() != SMTP_AUTHENTICATION_FAILURE_ERROR_CODE) {
+                throw negativeResponseFromNewToken;
+            }
+
+            //Okay, we failed on a new token.
+            //Invalidate the token anyway but assume it's permanent.
+            Log.v(LOG_TAG, "Authentication exception for new token, permanent error assumed",
+                    negativeResponseFromNewToken);
+
+            oauthTokenProvider.invalidateToken(username);
+
+            handlePermanentFailure(negativeResponseFromNewToken);
         }
     }
 
@@ -866,9 +884,12 @@ public class SmtpTransport extends Transport {
                 Authentication.computeXoauth(username,
                         oauthTokenProvider.getToken(username, OAuth2TokenProvider.OAUTH2_TIMEOUT)),
                 true);
-        //Per Google spec, respond to challenge with empty response
         if(response.replyCode == 334) {
+            retryXoauthWithNewToken = XOAuth2ChallengeParser.shouldRetry(
+                    response.message, mHost);
+
             Log.i(LOG_TAG, "Challenge response: "+ new Base64().decode(response.message));
+            //Per Google spec, respond to challenge with empty response
             executeSimpleCommandWithResponse("", false);
         }
     }

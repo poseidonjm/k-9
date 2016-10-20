@@ -13,6 +13,8 @@ import com.fsck.k9.mail.CertificateValidationException.Reason;
 import com.fsck.k9.mail.ConnectionSecurity;
 import com.fsck.k9.mail.K9MailLib;
 import com.fsck.k9.mail.MessagingException;
+import com.fsck.k9.mail.XOAuth2ChallengeParserTest;
+import com.fsck.k9.mail.filter.Base64;
 import com.fsck.k9.mail.oauth.OAuth2TokenProvider;
 import com.fsck.k9.mail.ssl.TrustedSocketFactory;
 import com.fsck.k9.mail.store.imap.mockserver.MockImapServer;
@@ -47,6 +49,7 @@ public class ImapConnectionTest {
     private static final String PASSWORD = "123456";
     private static final int SOCKET_CONNECT_TIMEOUT = 10000;
     private static final int SOCKET_READ_TIMEOUT = 10000;
+
 
 
     private TrustedSocketFactory socketFactory;
@@ -291,7 +294,7 @@ public class ImapConnectionTest {
     }
 
     @Test
-    public void open_authXoauthWithSaslIrWithOldTokenInvalidatesAndRetries() throws Exception {
+    public void open_authXoauthWithSaslIrThrowsExeptionOn401Response() throws Exception {
         settings.setAuthType(AuthType.XOAUTH2);
         when(oAuth2TokenProvider.getToken("user", OAuth2TokenProvider.OAUTH2_TIMEOUT))
                 .thenReturn("token").thenReturn("token2");
@@ -300,7 +303,93 @@ public class ImapConnectionTest {
         server.expect("2 AUTHENTICATE XOAUTH2 "+ByteString.encodeUtf8(
                 "user=user\001auth=Bearer token\001\001"
         ).base64());
-        server.output("+ r3j3krj3irj3oir3ojo");
+        server.output("+ "+ XOAuth2ChallengeParserTest.STATUS_401_RESPONSE);
+        server.expect("");
+        server.output("2 NO SASL authentication failed");
+        simplePostAuthenticationDialog(server, "4");
+        ImapConnection imapConnection = startServerAndCreateImapConnection(server);
+
+        try {
+            imapConnection.open();
+            fail();
+        } catch (AuthenticationFailedException e) {
+            assertEquals(
+                    "Command: AUTHENTICATE XOAUTH2; response: #2# [NO, SASL authentication failed]",
+                    e.getMessage());
+        }
+    }
+
+    @Test
+    public void open_authXoauthWithSaslIrInvalidatesAndRetriesNewTokenOn400Response() throws Exception {
+        settings.setAuthType(AuthType.XOAUTH2);
+        when(oAuth2TokenProvider.getToken("user", OAuth2TokenProvider.OAUTH2_TIMEOUT))
+                .thenReturn("token").thenReturn("token2");
+        MockImapServer server = new MockImapServer();
+        preAuthenticationDialog(server, "SASL-IR AUTH=XOAUTH AUTH=XOAUTH2");
+        server.expect("2 AUTHENTICATE XOAUTH2 "+ByteString.encodeUtf8(
+                "user=user\001auth=Bearer token\001\001"
+        ).base64());
+        server.output("+ "+XOAuth2ChallengeParserTest.STATUS_400_RESPONSE);
+        server.expect("");
+        server.output("2 NO SASL authentication failed");
+        server.expect("3 AUTHENTICATE XOAUTH2 "+ByteString.encodeUtf8(
+                "user=user\001auth=Bearer token2\001\001"
+        ).base64());
+        server.output("3 OK Success");
+        simplePostAuthenticationDialog(server, "4");
+        ImapConnection imapConnection = startServerAndCreateImapConnection(server);
+
+        imapConnection.open();
+
+        server.verifyConnectionStillOpen();
+        server.verifyInteractionCompleted();
+        InOrder inOrder = inOrder(oAuth2TokenProvider);
+        inOrder.verify(oAuth2TokenProvider).getToken("user", OAuth2TokenProvider.OAUTH2_TIMEOUT);
+        inOrder.verify(oAuth2TokenProvider).invalidateToken("user");
+        inOrder.verify(oAuth2TokenProvider).getToken("user", OAuth2TokenProvider.OAUTH2_TIMEOUT);
+    }
+
+    @Test
+    public void open_authXoauthWithSaslIrInvalidatesAndRetriesNewTokenOnInvalidJsonResponse() throws Exception {
+        settings.setAuthType(AuthType.XOAUTH2);
+        when(oAuth2TokenProvider.getToken("user", OAuth2TokenProvider.OAUTH2_TIMEOUT))
+                .thenReturn("token").thenReturn("token2");
+        MockImapServer server = new MockImapServer();
+        preAuthenticationDialog(server, "SASL-IR AUTH=XOAUTH AUTH=XOAUTH2");
+        server.expect("2 AUTHENTICATE XOAUTH2 "+ByteString.encodeUtf8(
+                "user=user\001auth=Bearer token\001\001"
+        ).base64());
+        server.output("+ "+XOAuth2ChallengeParserTest.INVALID_RESPONSE);
+        server.expect("");
+        server.output("2 NO SASL authentication failed");
+        server.expect("3 AUTHENTICATE XOAUTH2 "+ByteString.encodeUtf8(
+                "user=user\001auth=Bearer token2\001\001"
+        ).base64());
+        server.output("3 OK Success");
+        simplePostAuthenticationDialog(server, "4");
+        ImapConnection imapConnection = startServerAndCreateImapConnection(server);
+
+        imapConnection.open();
+
+        server.verifyConnectionStillOpen();
+        server.verifyInteractionCompleted();
+        InOrder inOrder = inOrder(oAuth2TokenProvider);
+        inOrder.verify(oAuth2TokenProvider).getToken("user", OAuth2TokenProvider.OAUTH2_TIMEOUT);
+        inOrder.verify(oAuth2TokenProvider).invalidateToken("user");
+        inOrder.verify(oAuth2TokenProvider).getToken("user", OAuth2TokenProvider.OAUTH2_TIMEOUT);
+    }
+
+    @Test
+    public void open_authXoauthWithSaslIrInvalidatesAndRetriesNewTokenOnMissingStatusJsonResponse() throws Exception {
+        settings.setAuthType(AuthType.XOAUTH2);
+        when(oAuth2TokenProvider.getToken("user", OAuth2TokenProvider.OAUTH2_TIMEOUT))
+                .thenReturn("token").thenReturn("token2");
+        MockImapServer server = new MockImapServer();
+        preAuthenticationDialog(server, "SASL-IR AUTH=XOAUTH AUTH=XOAUTH2");
+        server.expect("2 AUTHENTICATE XOAUTH2 "+ByteString.encodeUtf8(
+                "user=user\001auth=Bearer token\001\001"
+        ).base64());
+        server.output("+ "+XOAuth2ChallengeParserTest.MISSING_STATUS_RESPONSE);
         server.expect("");
         server.output("2 NO SASL authentication failed");
         server.expect("3 AUTHENTICATE XOAUTH2 "+ByteString.encodeUtf8(

@@ -40,6 +40,7 @@ import com.fsck.k9.mail.NetworkType;
 import com.fsck.k9.mail.filter.Base64;
 import com.fsck.k9.mail.filter.PeekableInputStream;
 import com.fsck.k9.mail.oauth.OAuth2TokenProvider;
+import com.fsck.k9.mail.oauth.XOAuth2ChallengeParser;
 import com.fsck.k9.mail.ssl.TrustedSocketFactory;
 import com.jcraft.jzlib.JZlib;
 import com.jcraft.jzlib.ZOutputStream;
@@ -76,6 +77,7 @@ class ImapConnection {
     private ImapSettings settings;
     private Exception stacktraceForClose;
     private boolean open = false;
+    private boolean retryXoauth2WithNewToken = true;
 
 
     public ImapConnection(ImapSettings settings, TrustedSocketFactory socketFactory,
@@ -369,23 +371,41 @@ class ImapConnection {
     }
 
     private void authXoauth2withSASLIR() throws IOException, MessagingException {
+        retryXoauth2WithNewToken = true;
         try {
             attemptXOAuth2();
         } catch (NegativeImapResponseException e) {
-            //We could avoid this if we had a reasonable chance of knowing
-            //if a token was invalid before use (e.g. due to expiry). But we don't
-            //This is the intended behaviour per AccountManager
-            Log.v(LOG_TAG, "Authentication exception, invalidating token and re-trying", e);
+            //We couldn't login with the token so invalidate it
             oauthTokenProvider.invalidateToken(settings.getUsername());
-            try {
-                attemptXOAuth2();
-            } catch (NegativeImapResponseException e2) {
-                //Okay, we failed on a new token.
-                //Invalidate the token anyway but assume it's permanent.
-                Log.v(LOG_TAG, "Authentication exception for new token, permanent error assumed", e);
-                oauthTokenProvider.invalidateToken(settings.getUsername());
-                throw new AuthenticationFailedException(e2.getMessage(), e);
+
+            if (!retryXoauth2WithNewToken) {
+                handlePermanentXoauth2Failure(e);
+            } else {
+                handleTemporaryXoauth2Failure(e);
             }
+        }
+    }
+
+    private void handlePermanentXoauth2Failure(NegativeImapResponseException e) throws AuthenticationFailedException {
+        Log.v(LOG_TAG, "Permanent failure during XOAUTH2", e);
+        throw new AuthenticationFailedException(e.getMessage(), e);
+    }
+
+    private void handleTemporaryXoauth2Failure(NegativeImapResponseException e) throws IOException, MessagingException {
+        //We got a response indicating a retry might suceed after token refresh
+        //We could avoid this if we had a reasonable chance of knowing
+        //if a token was invalid before use (e.g. due to expiry). But we don't
+        //This is the intended behaviour per AccountManager
+
+        Log.v(LOG_TAG, "Temporary failure - retrying with new token", e);
+        try {
+            attemptXOAuth2();
+        } catch (NegativeImapResponseException e2) {
+            //Okay, we failed on a new token.
+            //Invalidate the token anyway but assume it's permanent.
+            Log.v(LOG_TAG, "Authentication exception for new token, permanent error assumed", e);
+            oauthTokenProvider.invalidateToken(settings.getUsername());
+            handlePermanentXoauth2Failure(e2);
         }
     }
 
@@ -395,17 +415,27 @@ class ImapConnection {
         String tag = sendSaslIrCommand(Commands.AUTHENTICATE_XOAUTH2,
                 Authentication.computeXoauth(settings.getUsername(), token), true);
         extractCapabilities(
-                responseParser.readStatusResponse(tag, Commands.AUTHENTICATE_XOAUTH2, getLogId(),
-                        new UntaggedHandler() {
-                    @Override
-                    public void handleAsyncUntaggedResponse(ImapResponse response) throws IOException {
-                        if(response.isContinuationRequested()) {
-                            outputStream.write("\r\n".getBytes());
-                            outputStream.flush();
-                        }
-                    }
-                })
+            responseParser.readStatusResponse(tag, Commands.AUTHENTICATE_XOAUTH2, getLogId(),
+                    new UntaggedHandler() {
+                @Override
+                public void handleAsyncUntaggedResponse(ImapResponse response) throws IOException {
+                    handleXOAuthUntaggedResponse(response);
+
+                }
+            })
         );
+    }
+
+    private void handleXOAuthUntaggedResponse(ImapResponse response) throws IOException {
+        if (response.isString(0)) {
+            retryXoauth2WithNewToken = XOAuth2ChallengeParser.shouldRetry(
+                    response.getString(0), settings.getHost());
+        }
+
+        if(response.isContinuationRequested()) {
+            outputStream.write("\r\n".getBytes());
+            outputStream.flush();
+        }
     }
 
     private void authCramMD5() throws MessagingException, IOException {
