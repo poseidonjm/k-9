@@ -889,7 +889,6 @@ public class SmtpTransport extends Transport {
             retryXoauthWithNewToken = XOAuth2ChallengeParser.shouldRetry(
                     response.message, mHost);
 
-            Log.i(LOG_TAG, "Challenge response: "+ new Base64().decode(response.message));
             //Per Google spec, respond to challenge with empty response
             executeSimpleCommandWithResponse("", false);
         }

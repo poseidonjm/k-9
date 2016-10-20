@@ -18,6 +18,9 @@ public class XOAuth2ChallengeParser {
 
     public static boolean shouldRetry(String response, String host) {
         String decodedResponse = Base64.decode(response);
+
+        Log.v(LOG_TAG, "Challenge response: "+ decodedResponse);
+
         try {
             JSONObject json = new JSONObject(decodedResponse);
             if(!json.getString("status").equals(BAD_RESPONSE)) {
